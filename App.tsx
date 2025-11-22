@@ -4,7 +4,7 @@ import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
 import { InventoryItem, Customer, Order, WorkerLog, View, Task, OrderItem, AuthView, FactoryProfile, Deduction, PayrollRun, AuditLog, PayrollEntry, DeductionType, SettingsTab, PayrollCycle, Currency, User } from './types';
 import { INITIAL_INVENTORY, INITIAL_CUSTOMERS, INITIAL_LOGS, MASTER_TASKS, INITIAL_ORDERS, MOCK_FACTORY_ID, INITIAL_DEDUCTIONS, INITIAL_PAYROLL_RUNS, INITIAL_USERS } from './constants';
-import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Plus, Search, Bot, DollarSign, Factory, Activity, ShoppingCart, Settings, FileText, Download, Trash2, Calendar, X, Banknote, Info, User as UserIcon, Shield, Save, Mail, Wifi, WifiOff, Loader2, FileSpreadsheet } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Plus, Search, Bot, DollarSign, Factory, Activity, ShoppingCart, Settings, FileText, Download, Trash2, Calendar, X, Banknote, Info, User as UserIcon, Shield, Save, Mail, Wifi, WifiOff, Loader2, FileSpreadsheet, Menu } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { analyzeBusinessData } from './services/geminiService';
 
@@ -139,6 +139,7 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportType, setExportType] = useState<'Payroll' | 'Logs' | 'Summary'>('Summary');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // ---------------- Effects ----------------
   useEffect(() => {
@@ -1431,25 +1432,35 @@ export default function App() {
         currentView={currentView} 
         setCurrentView={setCurrentView} 
         onLogout={handleLogout}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
       
       {/* Global Components */}
       <Toast toast={toast} onClose={() => setToast(null)} />
       <ExportModal isOpen={showExportModal} onClose={() => setShowExportModal(false)} type={exportType} />
 
-      <main className="flex-1 md:ml-64 ml-0 p-8 transition-all duration-300">
+      <main className="flex-1 lg:ml-64 ml-0 p-8 transition-all duration-300">
         <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-8">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 capitalize">{currentView.replace(/_/g, ' ')}</h1>
-            <p className="text-slate-500 text-sm mt-1">
-              {currentView === 'dashboard' && `Overview of ${factoryProfile?.name || 'factory'} performance.`}
-              {currentView === 'inventory' && "Manage raw materials and finished goods."}
-              {currentView === 'production' && "Log daily worker output."}
-              {currentView === 'sales' && "Process sales orders."}
-              {currentView === 'crm' && "Customer insights and history."}
-              {currentView === 'payroll' && "Manage earnings, deductions, and payouts."}
-              {currentView === 'settings' && "Manage factory profile, users, and configuration."}
-            </p>
+          <div className="flex items-center gap-4">
+            <button 
+                onClick={() => setIsSidebarOpen(true)}
+                className="lg:hidden p-2 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+            >
+                <Menu className="w-5 h-5" />
+            </button>
+            <div>
+                <h1 className="text-2xl font-bold text-slate-900 capitalize">{currentView.replace(/_/g, ' ')}</h1>
+                <p className="text-slate-500 text-sm mt-1">
+                {currentView === 'dashboard' && `Overview of ${factoryProfile?.name || 'factory'} performance.`}
+                {currentView === 'inventory' && "Manage raw materials and finished goods."}
+                {currentView === 'production' && "Log daily worker output."}
+                {currentView === 'sales' && "Process sales orders."}
+                {currentView === 'crm' && "Customer insights and history."}
+                {currentView === 'payroll' && "Manage earnings, deductions, and payouts."}
+                {currentView === 'settings' && "Manage factory profile, users, and configuration."}
+                </p>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             {/* Offline Indicator */}
