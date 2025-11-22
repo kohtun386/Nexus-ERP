@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
-import { InventoryItem, Customer, Order, WorkerLog, View, Task, OrderItem, AuthView, FactoryProfile, Deduction, PayrollRun, AuditLog, PayrollEntry, DeductionType, SettingsTab, PayrollCycle, Currency, User } from './types';
+import { InventoryItem, Customer, Order, WorkerLog, View, Task, OrderItem, AuthView, FactoryProfile, Deduction, PayrollRun, AuditLog, PayrollEntry, DeductionType, SettingsTab, PayrollCycle, Currency, User, SubscriptionPlan } from './types';
 import { INITIAL_INVENTORY, INITIAL_CUSTOMERS, INITIAL_LOGS, MASTER_TASKS, INITIAL_ORDERS, MOCK_FACTORY_ID, INITIAL_DEDUCTIONS, INITIAL_PAYROLL_RUNS, INITIAL_USERS } from './constants';
-import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Plus, Search, Bot, DollarSign, Factory, Activity, ShoppingCart, Settings, FileText, Download, Trash2, Calendar, X, Banknote, Info, User as UserIcon, Shield, Save, Mail, Wifi, WifiOff, Loader2, FileSpreadsheet, Menu } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Plus, Search, Bot, DollarSign, Factory, Activity, ShoppingCart, Settings, FileText, Download, Trash2, Calendar, X, Banknote, Info, User as UserIcon, Shield, Save, Mail, Wifi, WifiOff, Loader2, FileSpreadsheet, Menu, CreditCard, Send, Check, Timer } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { analyzeBusinessData } from './services/geminiService';
 
@@ -173,13 +173,21 @@ export default function App() {
 
   // ---------------- Auth Handlers ----------------
   const handleLogin = (email: string) => {
+    // Mock profile fetch with subscription
     setFactoryProfile({
       name: "Nexus Manufacturing",
       email: email,
       address: "Yangon, Myanmar",
       phone: "09123456789",
       payrollCycle: "Weekly",
-      currency: "MMK"
+      currency: "MMK",
+      subscription: {
+          plan: 'Trial',
+          status: 'Active',
+          startDate: '2023-10-01',
+          endDate: '2023-11-01', // Mock Date
+          amount: 0
+      }
     });
     setIsAuthenticated(true);
     addAuditLog("Login", `User ${email} logged in.`);
@@ -193,7 +201,14 @@ export default function App() {
         address: '',
         phone: '',
         payrollCycle: 'Weekly',
-        currency: 'MMK'
+        currency: 'MMK',
+        subscription: { // Placeholder to prevent crashes before Setup
+            plan: 'Trial',
+            status: 'Active',
+            startDate: new Date().toISOString(),
+            endDate: new Date().toISOString(),
+            amount: 0
+        }
     });
     setAuthView('setup');
   };
@@ -610,6 +625,7 @@ export default function App() {
   };
 
   const PayrollView = () => {
+    // ... (existing payroll logic unchanged)
     const [activeTab, setActiveTab] = useState<'calculate' | 'history' | 'deductions'>('calculate');
     const [startDate, setStartDate] = useState('2023-10-01');
     const [endDate, setEndDate] = useState('2023-10-31');
@@ -625,7 +641,6 @@ export default function App() {
     // Unique worker names for dropdowns
     const uniqueWorkers = Array.from(new Set(workerLogs.map(l => l.workerName)));
 
-    // --- Logic: Calculate Payroll ---
     const handleCalculate = () => {
         const relevantLogs = workerLogs.filter(log => {
             return log.status === 'pending' && log.date >= startDate && log.date <= endDate;
@@ -726,7 +741,6 @@ export default function App() {
         showToast("Deduction record added.", 'info');
     };
 
-    // Sub-components for Payroll Tabs
     const CalculateTab = () => (
         <div className="space-y-6 animate-in slide-in-from-bottom-2">
             {/* Controls */}
@@ -1075,12 +1089,48 @@ export default function App() {
     const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
     // Local state for editing
     const [editProfile, setEditProfile] = useState<FactoryProfile>(factoryProfile || {
-        name: '', email: '', address: '', phone: '', payrollCycle: 'Weekly', currency: 'MMK'
+        name: '', email: '', address: '', phone: '', payrollCycle: 'Weekly', currency: 'MMK', 
+        subscription: { plan: 'Trial', status: 'Active', startDate: '', endDate: '', amount: 0 }
     });
+    
+    const [showPaymentModal, setShowPaymentModal] = useState(false);
+    const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
+    const [transactionId, setTransactionId] = useState('');
 
     const handleSaveProfile = () => {
         handleUpdateProfile(editProfile);
     };
+
+    // Subscription Logic
+    const handleUpgrade = (plan: SubscriptionPlan) => {
+        setSelectedPlan(plan);
+        setShowPaymentModal(true);
+    };
+
+    const handleSubmitPayment = () => {
+        if (!transactionId) {
+            showToast("Please enter the Transaction ID from Telegram", "error");
+            return;
+        }
+        // Simulating verification
+        const updatedProfile = { ...editProfile };
+        updatedProfile.subscription.status = 'Pending_Approval';
+        updatedProfile.subscription.transactionId = transactionId;
+        updatedProfile.subscription.plan = selectedPlan || 'Monthly';
+        
+        setEditProfile(updatedProfile);
+        handleUpdateProfile(updatedProfile);
+        
+        setShowPaymentModal(false);
+        setTransactionId('');
+        showToast("Payment submitted for approval. Status: Pending", "success");
+    };
+
+    // Pricing Tiers
+    const pricing = [
+        { id: 'Monthly', name: 'Monthly Plan', price: '50,000 MMK', features: ['Full ERP Access', 'Up to 50 Workers', 'Priority Support'] },
+        { id: 'Yearly', name: 'Yearly Plan', price: '500,000 MMK', features: ['Save 2 Months (17%)', 'Unlimited Workers', 'Dedicated Manager'] }
+    ];
 
     return (
         <div className="space-y-6 animate-in fade-in">
@@ -1105,6 +1155,12 @@ export default function App() {
                             className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${activeTab === 'team' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
                         >
                             <UserIcon className="w-4 h-4" /> Team & Roles
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('billing')}
+                            className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${activeTab === 'billing' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                            <CreditCard className="w-4 h-4" /> Billing & Subscription
                         </button>
                     </nav>
                 </div>
@@ -1267,11 +1323,122 @@ export default function App() {
                             </div>
                         </div>
                     )}
+
+                    {/* Billing & Subscription Tab */}
+                    {activeTab === 'billing' && (
+                        <div className="space-y-6">
+                            {/* Current Status Card */}
+                            <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl shadow-lg p-8 text-white relative overflow-hidden">
+                                <div className="relative z-10 flex justify-between items-start">
+                                    <div>
+                                        <p className="text-slate-300 text-sm font-medium uppercase tracking-wider mb-1">Current Plan</p>
+                                        <h2 className="text-3xl font-bold mb-2">{editProfile.subscription.plan} Plan</h2>
+                                        <div className="flex items-center gap-2 mt-2">
+                                            {editProfile.subscription.status === 'Active' && <span className="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-xs font-bold border border-green-500/30">Active</span>}
+                                            {editProfile.subscription.status === 'Pending_Approval' && <span className="bg-yellow-500/20 text-yellow-300 px-3 py-1 rounded-full text-xs font-bold border border-yellow-500/30">Pending Approval</span>}
+                                            {editProfile.subscription.status === 'Expired' && <span className="bg-red-500/20 text-red-300 px-3 py-1 rounded-full text-xs font-bold border border-red-500/30">Expired</span>}
+                                            <span className="text-slate-400 text-sm flex items-center gap-1">
+                                                <Timer className="w-4 h-4"/> Expires: {new Date(editProfile.subscription.endDate).toLocaleDateString()}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div className="bg-white/10 p-3 rounded-lg">
+                                        <CreditCard className="w-8 h-8 text-white" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Pricing Cards */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {pricing.map((plan) => (
+                                    <div key={plan.id} className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 hover:border-blue-400 transition hover:shadow-md">
+                                        <h3 className="text-lg font-bold text-slate-900">{plan.name}</h3>
+                                        <div className="text-3xl font-bold text-[#1E3A8A] my-4">{plan.price}</div>
+                                        <ul className="space-y-3 mb-6">
+                                            {plan.features.map((feat, idx) => (
+                                                <li key={idx} className="flex items-center gap-2 text-sm text-slate-600">
+                                                    <CheckCircle className="w-4 h-4 text-green-500" /> {feat}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                        <button 
+                                            onClick={() => handleUpgrade(plan.id as SubscriptionPlan)}
+                                            className="w-full py-2 rounded-lg border-2 border-[#1E3A8A] text-[#1E3A8A] font-bold hover:bg-[#1E3A8A] hover:text-white transition"
+                                        >
+                                            Upgrade
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
+
+            {/* Payment Modal (Telegram) */}
+            {showPaymentModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                        <div className="bg-blue-600 p-6 text-white text-center">
+                            <div className="bg-white/20 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+                                <Send className="w-6 h-6" />
+                            </div>
+                            <h3 className="text-xl font-bold">Pay via Telegram</h3>
+                            <p className="text-blue-100 text-sm">Complete payment for {selectedPlan} Plan</p>
+                        </div>
+                        <div className="p-6 space-y-6">
+                            <div className="space-y-4">
+                                <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 text-sm text-slate-600">
+                                    <p className="font-bold text-slate-800 mb-2">Step 1:</p>
+                                    <p>Open our Telegram Bot to make the payment using KPay or Wave Money.</p>
+                                    <a 
+                                        href="https://t.me/YourFactoryBot" 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="mt-3 block w-full bg-[#0088cc] hover:bg-[#0077b5] text-white text-center py-2 rounded-lg font-bold transition flex items-center justify-center gap-2"
+                                    >
+                                        <Send className="w-4 h-4" /> Open Telegram Bot
+                                    </a>
+                                </div>
+                                
+                                <div>
+                                    <p className="font-bold text-slate-800 mb-2 text-sm">Step 2:</p>
+                                    <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Enter Transaction ID</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                                        placeholder="e.g., 1234567890"
+                                        value={transactionId}
+                                        onChange={(e) => setTransactionId(e.target.value)}
+                                    />
+                                    <p className="text-xs text-slate-400 mt-1">The bot will provide this ID after payment.</p>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3">
+                                <button 
+                                    onClick={() => setShowPaymentModal(false)}
+                                    className="flex-1 py-3 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    onClick={handleSubmitPayment}
+                                    className="flex-1 py-3 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 flex items-center justify-center gap-2"
+                                >
+                                    <Check className="w-4 h-4" /> Confirm Payment
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
   };
+
+  // ... (Existing SalesView, CrmView logic)
+  // Re-insert SalesView and CrmView here as they were...
 
   const SalesView = () => {
     const [selectedCustomer, setSelectedCustomer] = useState('');
@@ -1283,11 +1450,10 @@ export default function App() {
       setCart(prev => {
         const existing = prev.find(i => i.itemId === item.itemId);
         if (existing) {
-          // Check stock
           if (existing.qty + 1 > item.currentStock) return prev; 
           return prev.map(i => i.itemId === item.itemId ? { ...i, qty: i.qty + 1 } : i);
         }
-        return [...prev, { itemId: item.itemId, qty: 1, price: 1500, itemName: item.name }]; // Mock price 1500
+        return [...prev, { itemId: item.itemId, qty: 1, price: 1500, itemName: item.name }];
       });
       showToast(`Added ${item.name} to cart`, 'info');
     };
@@ -1301,7 +1467,6 @@ export default function App() {
 
     return (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in slide-in-from-bottom-4 duration-500">
-        {/* Product Selection */}
         <div className="lg:col-span-2 space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
              {finishedGoods.map(item => (
@@ -1320,8 +1485,6 @@ export default function App() {
              ))}
           </div>
         </div>
-
-        {/* Checkout Panel */}
         <div className="lg:col-span-1">
           <div className="bg-white rounded-xl shadow-xl border border-slate-100 h-full flex flex-col">
             <div className="p-6 border-b border-slate-100 bg-slate-50">
@@ -1329,7 +1492,6 @@ export default function App() {
                 <ShoppingCart className="w-5 h-5" /> Current Order
               </h2>
             </div>
-            
             <div className="p-6 flex-1 flex flex-col gap-4">
                <div>
                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Customer</label>
@@ -1342,7 +1504,6 @@ export default function App() {
                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                  </select>
                </div>
-
                <div className="flex-1 overflow-y-auto border-t border-b border-dashed border-slate-200 py-4 space-y-3">
                   {cart.length === 0 && <p className="text-center text-slate-400 text-sm py-10">Cart is empty</p>}
                   {cart.map(item => (
@@ -1358,7 +1519,6 @@ export default function App() {
                     </div>
                   ))}
                </div>
-
                <div className="space-y-3">
                  <div className="flex justify-between items-center font-bold text-lg text-slate-900">
                    <span>Total</span>

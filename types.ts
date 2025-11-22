@@ -66,6 +66,20 @@ export type PayrollCycle = 'Weekly' | 'Bi-Weekly' | 'Monthly' | 'Custom';
 export type Currency = 'MMK' | 'USD' | 'THB';
 export type UserRole = 'Owner' | 'Admin' | 'Supervisor' | 'Viewer';
 
+// --- Subscription Types ---
+export type SubscriptionPlan = 'Trial' | 'Monthly' | 'Yearly';
+export type SubscriptionStatus = 'Active' | 'Expired' | 'Pending_Approval';
+
+export interface SubscriptionDetails {
+  plan: SubscriptionPlan;
+  status: SubscriptionStatus;
+  startDate: string;
+  endDate: string;
+  amount: number;
+  paymentMethod?: string; // e.g., 'KPay', 'Wave'
+  transactionId?: string; // From Telegram Payment
+}
+
 export interface FactoryProfile {
   name: string;
   address: string;
@@ -74,6 +88,7 @@ export interface FactoryProfile {
   logoUrl?: string;
   payrollCycle: PayrollCycle;
   currency: Currency;
+  subscription: SubscriptionDetails; // Added Subscription Info
 }
 
 export interface User {
@@ -87,7 +102,7 @@ export interface User {
 
 // UI State Types
 export type View = 'dashboard' | 'inventory' | 'production' | 'sales' | 'crm' | 'settings' | 'payroll';
-export type SettingsTab = 'profile' | 'config' | 'team';
+export type SettingsTab = 'profile' | 'config' | 'team' | 'billing'; // Added billing
 
 export interface AIInsight {
   title: string;

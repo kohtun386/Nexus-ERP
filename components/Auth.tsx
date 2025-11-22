@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Factory, Mail, Lock, ArrowRight, MapPin, Phone, CreditCard, CheckCircle, Upload, ArrowLeft, KeyRound } from 'lucide-react';
 import { AuthView, FactoryProfile, PayrollCycle, Currency } from '../types';
@@ -58,13 +59,26 @@ const Auth: React.FC<AuthProps> = ({ currentView, setView, onLogin, onSignup, on
       setError("Please complete your factory profile.");
       return;
     }
+
+    // Calculate Trial Date (30 Days from now)
+    const today = new Date();
+    const trialEndDate = new Date(today);
+    trialEndDate.setDate(today.getDate() + 30);
+
     const profile: FactoryProfile = {
       name: factoryName || "My Factory",
       email,
       address,
       phone,
       payrollCycle,
-      currency
+      currency,
+      subscription: {
+        plan: 'Trial',
+        status: 'Active',
+        startDate: today.toISOString(),
+        endDate: trialEndDate.toISOString(),
+        amount: 0
+      }
     };
     onSetupComplete(profile);
   };
@@ -158,7 +172,7 @@ const Auth: React.FC<AuthProps> = ({ currentView, setView, onLogin, onSignup, on
         <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-md animate-in slide-in-from-right duration-500">
           <div className="text-center mb-8">
             <h1 className="text-2xl font-bold text-slate-900">Create Factory Account</h1>
-            <p className="text-slate-500 mt-1">Start optimizing your production today</p>
+            <p className="text-slate-500 mt-1">Start with a <span className="text-green-600 font-bold">30-Day Free Trial</span></p>
           </div>
 
           <form onSubmit={handleSignup} className="space-y-5">
@@ -216,7 +230,7 @@ const Auth: React.FC<AuthProps> = ({ currentView, setView, onLogin, onSignup, on
               type="submit" 
               className="w-full bg-[#1E3A8A] hover:bg-blue-900 text-white py-3 rounded-lg font-bold transition shadow-md shadow-blue-900/20"
             >
-              Sign Up
+              Sign Up & Start Trial
             </button>
           </form>
 
@@ -231,7 +245,7 @@ const Auth: React.FC<AuthProps> = ({ currentView, setView, onLogin, onSignup, on
     );
   }
 
-  // Render Forgot Password Screen
+  // Render Forgot Password Screen (Unchanged)
   if (currentView === 'forgot-password') {
     return (
       <div className="min-h-screen bg-[#f3f4f6] flex items-center justify-center p-4">
@@ -291,7 +305,7 @@ const Auth: React.FC<AuthProps> = ({ currentView, setView, onLogin, onSignup, on
     );
   }
 
-  // Render Setup Screen
+  // Render Setup Screen (Updated)
   if (currentView === 'setup') {
     return (
       <div className="min-h-screen bg-[#f3f4f6] flex items-center justify-center p-4">
@@ -302,6 +316,9 @@ const Auth: React.FC<AuthProps> = ({ currentView, setView, onLogin, onSignup, on
             </div>
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Nexus ERP</h1>
             <p className="text-slate-500 mt-1">Let's set up your factory profile for <strong>{factoryName}</strong></p>
+            <p className="text-xs text-blue-600 mt-2 font-medium bg-blue-50 inline-block px-3 py-1 rounded-full">
+                Your 1-Month Free Trial is Active!
+            </p>
           </div>
 
           <form onSubmit={handleSetup} className="space-y-6">
