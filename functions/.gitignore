@@ -1,0 +1,13 @@
+# Compiled JavaScript files
+lib/**/*.js
+lib/**/*.js.map
+
+# TypeScript v1 declaration files
+typings/
+
+# Node.js dependency directory
+node_modules/
+*.local
+
+# Secret environment variables (Added by user)
+.env # <--- ဤ line ကို ဖိုင်၏အောက်ဆုံးတွင် ထည့်သွင်းပါ။
