@@ -1,9 +1,13 @@
-
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { 
+  initializeFirestore, 
+  persistentLocalCache, 
+  persistentMultipleTabManager 
+} from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
-// Your specific configuration
+import { getStorage } from "firebase/storage";
+
 const firebaseConfig = {
   apiKey: "AIzaSyC-XK6zHrVLLUNG1kscvobNBeG7GTFjdnw",
   authDomain: "gen-lang-client-0244893402.firebaseapp.com",
@@ -16,6 +20,17 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export const db = getFirestore(app);
-export const functions = getFunctions(app, "asia-east1");
+const auth = getAuth(app);
+
+// Initialize Firestore with specific settings to fix "Unexpected state" errors
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  }),
+  experimentalForceLongPolling: true,
+});
+
+const functions = getFunctions(app, "asia-east1");
+const storage = getStorage(app);
+
+export { auth, db, functions, storage };

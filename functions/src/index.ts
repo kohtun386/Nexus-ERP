@@ -1,365 +1,387 @@
-import * as functions from "firebase-functions";
+/**
+ * ============================================================================
+ * NEXUS ERP - FIREBASE CLOUD FUNCTIONS (index.ts)
+ * ============================================================================
+ * Backend logic for Multi-tenant User Provisioning, Payroll Automation,
+ * and Audit Triggers.
+ *
+ * Region: asia-east1 (Optimized for Asia/Myanmar access)
+ * ============================================================================
+ */
+
 import * as admin from "firebase-admin";
-import {GoogleGenerativeAI} from "@google/generative-ai";
-import Stripe from "stripe";
+import {
+  onCall,
+  HttpsError,
+  CallableRequest,
+} from "firebase-functions/v2/https";
+import {
+  onDocumentWritten,
+} from "firebase-functions/v2/firestore";
+import * as logger from "firebase-functions/logger";
+import { setGlobalOptions } from "firebase-functions/v2";
+import { v4 as uuidv4 } from "uuid";
 
-// Initialize Firebase Admin SDK
+// 1. Initialize Configuration
 admin.initializeApp();
+const db = admin.firestore();
 
-// --- Stripe Initialization ---
-const STRIPE_SECRET_KEY = functions.config().stripe?.secret_key;
-if (!STRIPE_SECRET_KEY) {
-  functions.logger.error(
-    "Stripe secret key not set. " +
-    "Run 'firebase functions:config:set stripe.secret_key=\"sk_...\"'"
-  );
+// Set global options to run in Asia (Fixes timeout issues)
+setGlobalOptions({ region: "asia-east1" });
+
+// ============================================================================
+// TYPE DEFINITIONS (For Type Safety)
+// ============================================================================
+interface WorkerLog {
+  workerId: string;
+  completedQty: number;
+  rateAtLog: number;
+  isFinalized: boolean;
 }
-const stripe = STRIPE_SECRET_KEY ?
-  new Stripe(STRIPE_SECRET_KEY, {apiVersion: "2024-06-20"}) :
-  undefined;
 
-// --- 1. Custom Claims (Role Assignment) Function ---
-export const setUserRole = functions
-  .region("asia-east1")
-  .https.onCall(async (
-    data: any, context: functions.https.CallableContext
-  ) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError(
-        "unauthenticated", "User must be authenticated."
-      );
-    }
-
-    const {uid, role} = data;
-    const callerUid = context.auth.uid;
-
-    if (!uid || !role || typeof uid !== "string" || typeof role !== "string") {
-      throw new functions.https.HttpsError(
-        "invalid-argument", "UID and role (string) are required."
-      );
-    }
-
-    // Security Check: Ensure the caller is an Admin or Owner
-    const callerUser = await admin.auth().getUser(callerUid);
-    const callerClaims = callerUser.customClaims;
-
-    if (!(callerClaims && (callerClaims.role === "Admin" ||
-      callerClaims.role === "Owner"))) {
-      throw new functions.https.HttpsError(
-        "permission-denied", "Only Admin or Owner can set user roles."
-      );
-    }
-
-    try {
-      await admin.auth().setCustomUserClaims(uid, {role: role});
-
-      const auditLog = {
-        type: "USER_ROLE_SET",
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        uid: uid,
-        newRole: role,
-        changedBy: callerUid,
-      };
-      await admin.firestore().collection("auditLogs").add(auditLog);
-
-      return {
-        message:
-          `Custom claim 'role' set to '${role}' for user ${uid}. ` +
-          "Audit log created.",
-      };
-    } catch (error) {
-      functions.logger.error(
-        "Error setting custom user claims or creating audit log:", error
-      );
-      throw new functions.https.HttpsError(
-        "internal", "Failed to set custom user claims.", error
-      );
-    }
-  });
-
-// --- 2. Gemini API Proxy Function ---
-const GEMINI_API_KEY = functions.config().gemini?.api_key;
-if (!GEMINI_API_KEY) {
-  functions.logger.error(
-    "Gemini API Key is not set. " +
-    "Run 'firebase functions:config:set gemini.api_key=\"KEY\"'"
-  );
+interface WorkerPaymentCalc {
+  workerId: string;
+  totalGrossPay: number;
+  totalDeductions: number;
+  netPay: number;
+  logCount: number;
 }
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : undefined;
-const model = genAI ? genAI.getGenerativeModel({model: "gemini-pro"}) : undefined;
 
-export const callGeminiApi = functions
-  .region("asia-east1")
-  .https.onCall(async (
-    data: any, context: functions.https.CallableContext
-  ) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError(
-        "unauthenticated", "Authentication required."
-      );
-    }
-    if (!model) {
-      throw new functions.https.HttpsError(
-        "internal", "Gemini API not initialized."
-      );
-    }
-    const {prompt} = data;
-    if (!prompt || typeof prompt !== "string") {
-      throw new functions.https.HttpsError(
-        "invalid-argument", "A \"prompt\" (string) is required."
-      );
-    }
-    try {
-      const result = await model.generateContent(prompt);
-      return {success: true, response: result.response.text()};
-    } catch (error) {
-      functions.logger.error("Error calling Gemini API:", error);
-      // eslint-disable-next-line max-len
-      throw new functions.https.HttpsError(
-        "internal", "Failed to get response from Gemini API.", error
-      );
-    }
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+const assertAuthenticated = (request: CallableRequest) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "User must be logged in.");
+  }
+  return request.auth;
+};
+
+const assertOwner = (request: CallableRequest) => {
+  const auth = assertAuthenticated(request);
+  if (auth.token.role !== "owner" || !auth.token.factoryId) {
+    throw new HttpsError("permission-denied", "Only factory owners can perform this action.");
+  }
+  return { uid: auth.uid, factoryId: auth.token.factoryId };
+};
+
+// ============================================================================
+// BLOCK 9: User Provisioning & Custom Claims
+// ============================================================================
+
+/**
+ * setupFactory: Creates a new factory and assigns the caller as 'Owner'.
+ */
+export const setupFactory = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "You must be logged in.");
+  }
+
+  // Prevent double creation
+  if (request.auth?.token.factoryId) {
+    throw new HttpsError("failed-precondition", "You already belong to a factory.");
+  }
+
+  const { name, currency, defaultCycle } = request.data;
+  if (!name || !currency) {
+    throw new HttpsError("invalid-argument", "Missing factory name or currency.");
+  }
+
+  // 1. Create Factory Doc
+  const factoryRef = db.collection("factories").doc();
+  const newFactoryId = factoryRef.id;
+  
+  await factoryRef.set({
+    name,
+    currency,
+    defaultCycle: defaultCycle || "monthly",
+    ownerUid: uid,
+    createdAt: new Date().toISOString(),
   });
 
-// --- 3. Inventory Automation Trigger ---
-export const updateInventoryOnProduction = functions
-  .region("asia-east1")
-  .firestore.document("productionLogs/{logId}")
-  .onCreate(async (snap: functions.firestore.QueryDocumentSnapshot) => {
-    const {itemId, quantity} = snap.data();
-    if (!itemId || typeof quantity !== "number" || quantity <= 0) {
-      functions.logger.error("Invalid production log data:", snap.data());
-      return null;
-    }
-    const inventoryRef = admin.firestore().collection("inventory").doc(itemId);
-    try {
-      await inventoryRef.update(
-        {stock: admin.firestore.FieldValue.increment(quantity)}
-      );
-      functions.logger.log(`Inventory for ${itemId} updated by ${quantity}.`);
-      return null;
-    } catch (error) {
-      functions.logger.error(
-        `Error updating inventory for ${itemId}:`, error
-      );
-      return null;
-    }
+  // 2. Set Custom Claims (The "Badge")
+  await admin.auth().setCustomUserClaims(uid, {
+    role: "owner",
+    factoryId: newFactoryId,
   });
 
-// --- 4. Sales Order Processing Trigger ---
-export const processSalesOrder = functions
-  .region("asia-east1")
-  .firestore.document("salesOrders/{orderId}")
-  .onCreate(async (
-    snap: functions.firestore.QueryDocumentSnapshot,
-    context: functions.EventContext
-  ) => {
-    const {items} = snap.data();
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      functions.logger.error(
-        "Invalid sales order, \"items\" is invalid:", snap.data()
-      );
-      return null;
-    }
-    const db = admin.firestore();
-    const batch = db.batch();
-    for (const item of items) {
-      const {itemId, quantity} = item;
-      if (
-        typeof itemId === "string" &&
-        typeof quantity === "number" &&
-        quantity > 0
-      ) {
-        const inventoryRef = db.collection("inventory").doc(itemId);
-        batch.update(
-          inventoryRef, {stock: admin.firestore.FieldValue.increment(-quantity)}
-        );
-      } else {
-        const orderId = context.params.orderId;
-        functions.logger.warn(
-          `Invalid item in sales order ${orderId}:`, item
-        );
-      }
-    }
-    try {
-      await batch.commit();
-      const orderId = context.params.orderId;
-      functions.logger.log(
-        `Inventory updated for sales order ${orderId}.`
-      );
-      return null;
-    } catch (error) {
-      const orderId = context.params.orderId;
-      functions.logger.error(
-        `Error processing sales order ${orderId}:`, error
-      );
-      return null;
-    }
+  // 3. Update User Profile in Firestore
+  await db.collection("users").doc(uid).set({
+    email: request.auth?.token.email || "",
+    role: "owner",
+    factoryId: newFactoryId,
+    createdAt: new Date().toISOString(),
+  }, { merge: true });
+
+  logger.info(`Factory ${newFactoryId} created by ${uid}`);
+  return { factoryId: newFactoryId };
+});
+
+/**
+ * inviteSupervisor: Owner invites a supervisor (Creates Auth + Claims).
+ */
+export const inviteSupervisor = onCall(async (request) => {
+  const { uid, factoryId } = assertOwner(request);
+  const { email, name } = request.data;
+
+  if (!email || !name) throw new HttpsError("invalid-argument", "Email and Name required.");
+
+  // 1. Create Auth User with Temp Password
+  const temporaryPassword = uuidv4().substring(0, 8);
+  let newUserRecord;
+  
+  try {
+    newUserRecord = await admin.auth().createUser({
+      email,
+      password: temporaryPassword,
+      displayName: name,
+    });
+  } catch (error: any) {
+    logger.error("Auth Create Error", error);
+    throw new HttpsError("already-exists", "User with this email likely already exists.");
+  }
+
+  // 2. Set Claims
+  await admin.auth().setCustomUserClaims(newUserRecord.uid, {
+    role: "supervisor",
+    factoryId: factoryId,
   });
 
-// --- 5. Auditing Trigger for Inventory ---
-export const auditInventoryUpdate = functions
-  .region("asia-east1")
-  .firestore.document("inventory/{itemId}")
-  .onUpdate(async (
-    change: functions.Change<functions.firestore.DocumentSnapshot>,
-    context: functions.EventContext
-  ) => {
-    const before = change.before.data();
-    const after = change.after.data();
+  // 3. Create User Doc
+  await db.collection("users").doc(newUserRecord.uid).set({
+    factoryId,
+    email,
+    name,
+    role: "supervisor",
+    invitedBy: uid,
+    createdAt: new Date().toISOString(),
+  });
 
-    if (before && after && before.stock !== after.stock) {
-      const {itemId} = context.params;
-      const log = {
-        type: "INVENTORY_UPDATE",
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        itemId: itemId,
-        change: {from: before.stock, to: after.stock},
+  return { email, temporaryPassword };
+});
+
+// ============================================================================
+// BLOCK 6: Payroll Automation Engine
+// ============================================================================
+
+/**
+ * calculatePayroll: Aggregates workerLogs to create a Payroll draft.
+ * (Now Fully Implemented)
+ */
+export const calculatePayroll = onCall(async (request) => {
+  const { factoryId, uid } = assertOwner(request);
+  const { periodStart, periodEnd, cycleType } = request.data;
+
+  if (!periodStart || !periodEnd) throw new HttpsError("invalid-argument", "Date range required.");
+
+  // 1. Query Worker Logs
+  const logsSnapshot = await db.collection("workerLogs")
+    .where("factoryId", "==", factoryId)
+    .where("date", ">=", periodStart)
+    .where("date", "<=", periodEnd)
+    .where("isFinalized", "==", false) // Only calculate open logs
+    .get();
+
+  if (logsSnapshot.empty) {
+    return { message: "No open logs found for this period." };
+  }
+
+  // 2. Aggregate Data (Group by Worker)
+  const calculations: Record<string, WorkerPaymentCalc> = {};
+  let payrollTotalGross = 0;
+
+  logsSnapshot.forEach(doc => {
+    const data = doc.data() as WorkerLog;
+    const pay = data.completedQty * data.rateAtLog;
+
+    if (!calculations[data.workerId]) {
+      calculations[data.workerId] = {
+        workerId: data.workerId,
+        totalGrossPay: 0,
+        totalDeductions: 0,
+        netPay: 0,
+        logCount: 0
       };
-      try {
-        await admin.firestore().collection("auditLogs").add(log);
-      } catch (error) {
-        // eslint-disable-next-line max-len
-        functions.logger.error(
-          `Failed to write inventory audit log for item ${itemId}:`, error
-        );
-      }
     }
-    return null;
+
+    calculations[data.workerId].totalGrossPay += pay;
+    calculations[data.workerId].netPay += pay; // Deductions added later
+    calculations[data.workerId].logCount += 1;
+    payrollTotalGross += pay;
   });
 
-// --- 6. Payroll Calculation Function ---
-export const calculatePayroll = functions
-  .region("asia-east1")
-  .https.onCall(async (
-    data: any, context: functions.https.CallableContext
-  ) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError(
-        "unauthenticated", "User must be authenticated."
-      );
-    }
-    const caller = await admin.auth().getUser(context.auth.uid);
-    const callerRole = caller.customClaims?.role;
-    if (!["Manager", "Admin", "Owner"].includes(callerRole)) {
-      throw new functions.https.HttpsError(
-        "permission-denied",
-        "Only Managers, Admins, or Owners can run payroll."
-      );
-    }
+  // 3. Create Payroll Document
+  const payrollRef = db.collection("payrolls").doc();
+  const payrollId = payrollRef.id;
 
-    const {startDate, endDate} = data;
-    if (!startDate || !endDate ||
-      typeof startDate !== "string" || typeof endDate !== "string") {
-      throw new functions.https.HttpsError(
-        "invalid-argument",
-        "A \"startDate\" and \"endDate\" (ISO string) are required."
-      );
-    }
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new functions.https.HttpsError(
-        "invalid-argument", "Invalid date format."
-      );
-    }
+  const batch = db.batch();
 
-    const db = admin.firestore();
-    try {
-      const logsSnapshot = await db.collection("productionLogs")
-        .where("timestamp", ">=", start)
-        .where("timestamp", "<=", end)
-        .get();
-
-      if (logsSnapshot.empty) {
-        return {message: "No production logs found for the selected period."};
-      }
-
-      const payroll: { [employeeId: string]: number } = {};
-      logsSnapshot.forEach((doc) => {
-        const log = doc.data();
-        const {employeeId, quantity, pieceRate} = log;
-        if (
-          employeeId &&
-          typeof quantity === "number" &&
-          typeof pieceRate === "number"
-        ) {
-          if (!payroll[employeeId]) {
-            payroll[employeeId] = 0;
-          }
-          payroll[employeeId] += quantity * pieceRate;
-        }
-      });
-
-      const payrollRun = {
-        runDate: admin.firestore.FieldValue.serverTimestamp(),
-        period: {start: startDate, end: endDate},
-        status: "completed",
-        results: payroll,
-        runBy: context.auth.uid,
-      };
-      const runRef = await db.collection("payrollRuns").add(payrollRun);
-
-      return {success: true, payrollRunId: runRef.id, results: payroll};
-    } catch (error) {
-      functions.logger.error("Error calculating payroll:", error);
-      throw new functions.https.HttpsError(
-        "internal",
-        "An internal error occurred while calculating payroll.",
-        error
-      );
-    }
+  // Set Payroll Header
+  batch.set(payrollRef, {
+    factoryId,
+    periodStart,
+    periodEnd,
+    cycleType: cycleType || "custom",
+    status: "Draft",
+    totalGrossPay: payrollTotalGross,
+    totalDeductions: 0,
+    totalNetPay: payrollTotalGross,
+    createdBy: uid,
+    createdAt: new Date().toISOString()
   });
 
-// --- 7. Payment Gateway Function (Stripe) ---
-export const createStripePaymentIntent = functions
-  .region("asia-east1")
-  .https.onCall(async (
-    data: any, context: functions.https.CallableContext
-  ) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError(
-        "unauthenticated",
-        "User must be authenticated to make a payment."
-      );
-    }
-    if (!stripe) {
-      throw new functions.https.HttpsError(
-        "internal", "Stripe integration is not configured."
-      );
-    }
-
-    const {amount, currency} = data;
-    if (
-      typeof amount !== "number" || amount <= 0 ||
-      typeof currency !== "string"
-    ) {
-      throw new functions.https.HttpsError(
-        "invalid-argument",
-        "A positive amount (number) and currency (string) are required."
-      );
-    }
-
-    try {
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: amount,
-        currency: currency,
-        automatic_payment_methods: {
-          enabled: true,
-        },
-      });
-      return {
-        clientSecret: paymentIntent.client_secret,
-      };
-    } catch (error) {
-      let message = "An unknown error occurred.";
-      if (error instanceof Error) {
-        message = error.message;
-      }
-      functions.logger.error("Error creating Stripe Payment Intent:", error);
-      throw new functions.https.HttpsError(
-        "internal", "Failed to create Payment Intent.", message
-      );
-    }
+  // Create Sub-collection: workerPayments
+  Object.values(calculations).forEach(calc => {
+    const paymentRef = payrollRef.collection("workerPayments").doc(calc.workerId);
+    batch.set(paymentRef, calc);
   });
 
+  await batch.commit();
+  logger.info(`Payroll ${payrollId} calculated for factory ${factoryId}`);
+
+  return { payrollId, totalAmount: payrollTotalGross, workerCount: Object.keys(calculations).length };
+});
+
+/**
+ * finalizePayroll: Locks logs and marks payroll as Final.
+ */
+export const finalizePayroll = onCall(async (request) => {
+  const { factoryId } = assertOwner(request);
+  const { payrollId } = request.data;
+
+  return db.runTransaction(async (t) => {
+    const payrollRef = db.collection("payrolls").doc(payrollId);
+    const payrollDoc = await t.get(payrollRef);
+
+    if (!payrollDoc.exists || payrollDoc.data()?.factoryId !== factoryId) {
+      throw new HttpsError("not-found", "Payroll not found.");
+    }
+    if (payrollDoc.data()?.status === "Finalized") {
+      throw new HttpsError("failed-precondition", "Already finalized.");
+    }
+
+    // 1. Update Payroll Status
+    t.update(payrollRef, { status: "Finalized", finalizedAt: new Date().toISOString() });
+
+    // 2. Lock Worker Logs
+    const { periodStart, periodEnd } = payrollDoc.data()!;
+    const logsQuery = await db.collection("workerLogs")
+      .where("factoryId", "==", factoryId)
+      .where("date", ">=", periodStart)
+      .where("date", "<=", periodEnd)
+      .get();
+
+    logsQuery.forEach(doc => {
+      t.update(doc.ref, { isFinalized: true });
+    });
+
+    return { success: true, count: logsQuery.size };
+  });
+});
+
+/**
+ * addDeduction: Updates a worker's payment and the main payroll totals.
+ * (Now Fully Implemented)
+ */
+export const addDeduction = onCall(async (request) => {
+  assertOwner(request); // Ensures only owner can perform this action.
+  const { payrollId, workerId, amount, reason } = request.data;
+  const deductionAmount = Number(amount);
+
+  if (!deductionAmount || deductionAmount <= 0) {
+    throw new HttpsError("invalid-argument", "Valid amount required.");
+  }
+
+  const payrollRef = db.collection("payrolls").doc(payrollId);
+  const workerPaymentRef = payrollRef.collection("workerPayments").doc(workerId);
+
+  return db.runTransaction(async (t) => {
+    // Read
+    const payrollDoc = await t.get(payrollRef);
+    const workerDoc = await t.get(workerPaymentRef);
+
+    if (!payrollDoc.exists || !workerDoc.exists) {
+      throw new HttpsError("not-found", "Payroll or Worker Payment not found.");
+    }
+    if (payrollDoc.data()?.status === "Finalized") {
+      throw new HttpsError("failed-precondition", "Cannot modify finalized payroll.");
+    }
+
+    // Calculate New Values
+    const currentPayrollDeductions = payrollDoc.data()?.totalDeductions || 0;
+    const currentPayrollNet = payrollDoc.data()?.totalNetPay || 0;
+    
+    const currentWorkerDeductions = workerDoc.data()?.totalDeductions || 0;
+    const currentWorkerNet = workerDoc.data()?.netPay || 0;
+
+    // Update Worker Payment
+    t.update(workerPaymentRef, {
+      totalDeductions: currentWorkerDeductions + deductionAmount,
+      netPay: currentWorkerNet - deductionAmount,
+      // Add to ledger array (simplified)
+      deductionsList: admin.firestore.FieldValue.arrayUnion({
+        amount: deductionAmount,
+        reason,
+        addedAt: new Date().toISOString()
+      })
+    });
+
+    // Update Main Payroll Totals
+    t.update(payrollRef, {
+      totalDeductions: currentPayrollDeductions + deductionAmount,
+      totalNetPay: currentPayrollNet - deductionAmount
+    });
+
+    return { success: true };
+  });
+});
+
+/**
+ * generateExport: Stub for Phase 2.
+ */
+export const generateExport = onCall(async (request) => {
+  return { url: "#", message: "Export functionality coming in Phase 2." };
+});
+
+// ============================================================================
+// BLOCK 6: Audit Trigger
+// ============================================================================
+
+export const onAuditLog = onDocumentWritten({
+  document: "{collectionId}/{docId}",
+  region: "asia-east1" // Important: Trigger must match function region
+}, (event) => {
+  const collectionId = event.params.collectionId;
+  const targetCollections = ["payrolls", "workerLogs", "rates"];
+
+  if (!targetCollections.includes(collectionId)) return;
+
+  const before = event.data?.before.data();
+  const after = event.data?.after.data();
+  
+  // Determine Action
+  let actionType = "unknown";
+  if (!before && after) actionType = "CREATE";
+  else if (before && after) actionType = "UPDATE";
+  else if (before && !after) actionType = "DELETE";
+
+  const factoryId = after?.factoryId || before?.factoryId;
+  if (!factoryId) return; // Cannot audit without context
+
+  // Ideally, 'modifiedBy' should be passed in the data. 
+  // Since triggers run as system, we rely on the doc data.
+  const userId = after?.modifiedBy || after?.createdBy || "system";
+
+  return db.collection("auditLogs").add({
+    factoryId,
+    collection: collectionId,
+    docId: event.params.docId,
+    action: actionType,
+    userId,
+    timestamp: new Date().toISOString(),
+    details: {
+      diff: actionType === "UPDATE" ? "See versions" : "N/A"
+    }
+  });
+});

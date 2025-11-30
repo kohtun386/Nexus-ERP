@@ -1,17 +1,22 @@
 {
   "compilerOptions": {
-    "module": "NodeNext",
-    "esModuleInterop": true,
-    "moduleResolution": "nodenext",
+    "module": "commonjs",
     "noImplicitReturns": true,
     "noUnusedLocals": true,
     "outDir": "lib",
     "sourceMap": true,
     "strict": true,
-    "target": "es2017"
+    "target": "es2017",
+    "esModuleInterop": true,
+    "skipLibCheck": true
   },
   "compileOnSave": true,
   "include": [
     "src"
+  ],
+  "exclude": [
+    "node_modules",
+    "../node_modules", // ဒါပါမှ အပြင်က React Library တွေကို မဖတ်တော့မှာပါ
+    "../apps"          // Frontend folder ကို လှမ်းမကြည့်အောင် တားတာပါ
   ]
 }

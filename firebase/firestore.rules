@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- 1. Helper Functions (အထောက်အကူပြု Function များ) ---
+
+    // Login ဝင်ထားခြင်း ရှိမရှိ စစ်ဆေးသည်
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Token ထဲတွင် ပါလာသော Role နှင့် FactoryId ကို စစ်ဆေးသည်
+    function getUserRole() {
+      return request.auth.token.role; // 'owner' or 'supervisor'
+    }
+
+    function getFactoryId() {
+      return request.auth.token.factoryId;
+    }
+
+    // စက်ရုံပိုင်ရှင် ဟုတ်မဟုတ် စစ်ဆေးသည်
+    function isOwner() {
+      return isSignedIn() && getUserRole() == 'owner';
+    }
+
+    // Supervisor ဟုတ်မဟုတ် စစ်ဆေးသည်
+    function isSupervisor() {
+      return isSignedIn() && getUserRole() == 'supervisor';
+    }
+
+    // Data တစ်ခုကို ဖတ်/ရေး လုပ်တဲ့အခါ ကိုယ့်စက်ရုံက Data ဟုတ်မဟုတ် စစ်ဆေးသည် (The Factory Wall)
+    function belongsToMyFactory(resourceData) {
+      return isSignedIn() && resourceData.factoryId == getFactoryId();
+    }
+
+    // Create လုပ်တဲ့အခါ ကိုယ့်စက်ရုံ ID ပါမပါ စစ်ဆေးသည်
+    function isMyFactory(factoryId) {
+      return isSignedIn() && factoryId == getFactoryId();
+    }
+
+    // --- 2. Collection Rules ---
+
+    // Users Collection
+    match /users/{userId} {
+      // ကိုယ့် Profile ကိုယ်ဖတ်ခွင့်ရှိ၊ Owner က သူ့စက်ရုံကလူကို သူဖတ်ခွင့်ရှိ
+      allow read: if isSignedIn() && (request.auth.uid == userId || belongsToMyFactory(resource.data));
+      // Cloud Function ကနေပဲ ရေးမှာမို့ Client Write ကို ပိတ်ထားမယ်
+      allow write: if false; 
+    }
+
+    // Factories Profile
+    match /factories/{factoryId} {
+      allow read: if isSignedIn() && getFactoryId() == factoryId;
+      allow write: if false; // Setup က Cloud Function နဲ့ လုပ်တာမို့ ပိတ်ထားမယ်
+    }
+
+    // Factory Profiles (Settings)
+    match /factoryProfiles/{docId} {
+       allow read: if isSignedIn();
+       allow write: if isSignedIn(); 
+    }
+
+    // --- 3. Workers Management ---
+    match /workers/{workerId} {
+      allow read: if belongsToMyFactory(resource.data);
+      allow create: if isSignedIn() && isMyFactory(request.resource.data.factoryId);
+      allow update: if isOwner() && belongsToMyFactory(resource.data);
+      allow delete: if isOwner() && belongsToMyFactory(resource.data);
+    }
+
+    // --- 4. Rates (Tasks & Prices) ---
+    match /rates/{rateId} {
+      allow read: if belongsToMyFactory(resource.data);
+      allow create: if isOwner() && isMyFactory(request.resource.data.factoryId);
+      allow update: if isOwner() && belongsToMyFactory(resource.data);
+      allow delete: if false; // Soft delete by archiving instead
+    }
+
+    // --- 5. Production Logs (Worker Logs) ---
+    match /workerLogs/{logId} {
+      allow read: if belongsToMyFactory(resource.data);
+      allow create: if isSignedIn() && isMyFactory(request.resource.data.factoryId);
+      allow update: if isOwner() && belongsToMyFactory(resource.data) && resource.data.isFinalized == false;
+      allow delete: if isOwner() && belongsToMyFactory(resource.data);
+    }
+
+    // --- 6. Inventory Management ---
+    match /inventory/{itemId} {
+      allow read: if belongsToMyFactory(resource.data);
+      allow create: if isOwner() && isMyFactory(request.resource.data.factoryId);
+      allow update: if isOwner() && belongsToMyFactory(resource.data);
+      allow delete: if isOwner() && belongsToMyFactory(resource.data);
+    }
+
+    // --- 6.1 Inventory Transactions (Stock In/Out) ---
+    match /inventoryTransactions/{txnId} {
+      allow read: if belongsToMyFactory(resource.data);
+      allow create: if isSignedIn() && isMyFactory(request.resource.data.factoryId);
+      allow update, delete: if false; // Transactions are immutable (ပြင်ခွင့်မပေး)
+    }
+
+    // --- 7. Payroll Management ---
+    match /payrolls/{payrollId} {
+      allow read: if isOwner() && belongsToMyFactory(resource.data);
+      allow create: if isOwner() && isMyFactory(request.resource.data.factoryId);
+      allow update: if isOwner() && belongsToMyFactory(resource.data);
+      allow delete: if false; // Payroll records should not be deleted
+    }
+
+    // Payroll Items (Individual worker payroll details)
+    match /payrollItems/{itemId} {
+      allow read: if isOwner() && belongsToMyFactory(resource.data);
+      allow create: if isOwner() && isMyFactory(request.resource.data.factoryId);
+      allow update: if isOwner() && belongsToMyFactory(resource.data);
+      allow delete: if false;
+    }
+
+    // Payroll Runs (Legacy - if still used)
+    match /payrollRuns/{runId} {
+      allow read: if isOwner() && belongsToMyFactory(resource.data);
+      allow write: if isOwner() && isMyFactory(request.resource.data.factoryId);
+    }
+    
+    // --- 8. Deductions ---
+    match /deductions/{deductionId} {
+       allow read: if belongsToMyFactory(resource.data);
+       allow write: if (isOwner() || isSupervisor()) && isMyFactory(request.resource.data.factoryId);
+    }
+    
+    // --- 9. Orders & Customers (MVP - Simplified) ---
+    match /orders/{orderId} {
+       allow read: if belongsToMyFactory(resource.data);
+       allow write: if isSignedIn() && isMyFactory(request.resource.data.factoryId);
+    }
+    
+    match /customers/{customerId} {
+       allow read: if belongsToMyFactory(resource.data);
+       allow write: if isSignedIn() && isMyFactory(request.resource.data.factoryId);
+    }
+
+    // --- 10. Audit Logs (Immutable) ---
+    match /auditLogs/{logId} {
+      allow read: if isOwner() && belongsToMyFactory(resource.data);
+      allow create: if isSignedIn(); // System or User can log
+      allow update, delete: if false; // ပြင်ခွင့်/ဖျက်ခွင့် လုံးဝပိတ် (Immutable)
+    }
+
+    // --- Default Deny (မပါဝင်သော အရာများအားလုံး ပိတ်သည်) ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
